@@ -21,7 +21,7 @@
 ;; ChaCha20-Poly1305
 ;; https://blog.cloudflare.com/do-the-chacha-better-mobile-performance-with-cryptography/
 
-(defn ^SecretKeySpec generate-secret-key
+(defn- ^SecretKeySpec generate-secret-key
   ([passphrase] (generate-secret-key passphrase "nosalt"))
   ([^String passphrase ^String salt]
    (let [key-factory (SecretKeyFactory/getInstance "PBKDF2WithHmacSHA256")
@@ -32,13 +32,13 @@
      (let [secret-key (.generateSecret key-factory key-spec)]
        (SecretKeySpec. (.getEncoded secret-key) "ChaCha20")))))
 
-(defn escape-base64 [base64]
+(defn- escape-base64 [base64]
   (str/replace base64 #"/" "-"))
 
-(defn ^String unescape-base64 [base64]
+(defn- ^String unescape-base64 [base64]
   (str/replace base64 #"-" "/"))
 
-(defn byte-arrays-equal? [a b]
+(defn- byte-arrays-equal? [a b]
   (and (= (count a) (count b))
        (empty? (filter (complement zero?) (map bit-xor a b)))))
 
@@ -61,7 +61,7 @@
         (catch AEADBadTagException _
           (throw (Exception. "Failed to decrypt file")))))))
 
-(defn calculate-checksum [file-path]
+(defn- calculate-checksum [file-path]
   (let [digest (MessageDigest/getInstance "MD5")
         buffer (make-array Byte/TYPE 8192)]
     (with-open [input-stream (io/input-stream file-path)]
@@ -72,7 +72,14 @@
             (recur)))))
     (.digest digest)))
 
-(defn ensure-integrity! [orig-file encrypted-file ^SecretKeySpec key]
+(defn- delete-directory-recursive!
+  "Recursively delete a directory."
+  [^File file]
+  (when (.isDirectory file)
+    (run! delete-directory-recursive! (.listFiles file)))
+  (io/delete-file file))
+
+(defn- ensure-integrity! [orig-file encrypted-file ^SecretKeySpec key]
   (let [cipher (Cipher/getInstance "ChaCha20-Poly1305")
         temp-file (File/createTempFile (str (.toEpochMilli (Instant/now))) ".tmp")]
     (try
@@ -87,7 +94,7 @@
       (finally
         (.delete temp-file)))))
 
-(defn encrypt-file
+(defn encrypt-file!
   ([input-file passphrase]
    (let [file (io/file input-file)
          parent (.getParent file)
@@ -95,7 +102,7 @@
          output-file (if parent
                        (str parent "/" fname-enc)
                        fname-enc)]
-     (encrypt-file input-file passphrase output-file)))
+     (encrypt-file! input-file passphrase output-file)))
   ([input-file passphrase output-file]
    (let [key (generate-secret-key passphrase)
          cipher (Cipher/getInstance "ChaCha20-Poly1305")]
@@ -107,7 +114,7 @@
      (ensure-integrity! input-file output-file key)
      (.delete (io/file input-file)))))
 
-(defn decrypt-file
+(defn decrypt-file!
   ([input-file passphrase]
    (let [file (io/file input-file)
          parent (.getParent file)
@@ -115,7 +122,7 @@
          output-file (if parent
                        (str parent "/" fname-dec)
                        fname-dec)]
-     (decrypt-file input-file passphrase output-file)))
+     (decrypt-file! input-file passphrase output-file)))
   ([input-file passphrase output-file]
    (let [key (generate-secret-key passphrase)
          cipher (Cipher/getInstance "ChaCha20-Poly1305")]
@@ -129,33 +136,97 @@
          (throw (Exception. "Failed to decrypt file"))))
      (.delete (io/file input-file)))))
 
+(defn encrypt-dir! [path passphrase]
+  (let [root (io/file path)
+        dir? #(.isDirectory ^File %)
+        dirs-to-delete (filter dir? (.listFiles root))]
+    (->> (tree-seq dir? #(.listFiles ^File %) root)
+         (remove #(= root %))
+         (filter (complement dir?))
+         (pmap (fn [^File file]
+                 ;; file path without root folder
+                 (let [fpath  (str/replace-first (.getPath file)
+                                                 (re-pattern path)
+                                                 "")
+                       fpath (if (str/starts-with? fpath "/")
+                               (str/replace-first fpath #"/" "")
+                               fpath)
+                       ;; directory names, drop last is file name
+                       fdirs (drop-last (str/split fpath #"/"))
+                       fname-enc (encrypt-text (.getName file) passphrase)
+                       fdirs-enc (map #(encrypt-text % passphrase) fdirs)
+                       fpath-enc (str
+                                   (if (str/ends-with? path "/")
+                                     path
+                                     (str path "/"))
+                                   (str/join "/" fdirs-enc))
+                       fname-enc (str fpath-enc "/" fname-enc)]
+
+                   (.mkdirs (io/file fpath-enc))
+                   (encrypt-file! file passphrase fname-enc))))
+         doall)
+    ;; delete empty folders
+    (run! delete-directory-recursive! dirs-to-delete)))
+
+(defn decrypt-dir! [path passphrase]
+  (let [root (io/file path)
+        dir? #(.isDirectory ^File %)
+        dirs-to-delete (filter dir? (.listFiles root))]
+    (->> (tree-seq dir? #(.listFiles ^File %) root)
+         (remove #(= root %))
+         (filter (complement dir?))
+         (pmap (fn [^File file]
+                 ;; file path without root folder
+                 (let [fpath  (str/replace-first (.getPath file)
+                                                 (re-pattern path)
+                                                 "")
+                       fpath (if (str/starts-with? fpath "/")
+                               (str/replace-first fpath #"/" "")
+                               fpath)
+                       ;; directory names, drop last is file name
+                       fdirs (drop-last (str/split fpath #"/"))
+                       fname-dec (decrypt-text (.getName file) passphrase)
+                       fdirs-dec (map #(decrypt-text % passphrase) fdirs)
+                       fpath-dec (str
+                                   (if (str/ends-with? path "/")
+                                     path
+                                     (str path "/"))
+                                   (str/join "/" fdirs-dec))
+                       fname-dec (str fpath-dec "/" fname-dec)]
+
+                   (.mkdirs (io/file fpath-dec))
+                   (decrypt-file! file passphrase fname-dec))))
+         doall)
+    ;; delete empty folders
+    (run! delete-directory-recursive! dirs-to-delete)))
+
 (defn -main
   [& args]
   (let [cmd (first args)
         param (second args)
-        password (nth args 2)]
+        passphrase (nth args 2)]
     (case cmd
-      "encrypt-text" (println (encrypt-text param password))
-      "decrypt-text" (println (decrypt-text param password))
-      "encrypt-file" (encrypt-file param password)
-      "decrypt-file" (decrypt-file param password)
-      (println "Unknown command" cmd))))
+      "encrypt-text" (println (encrypt-text param passphrase))
+      "decrypt-text" (println (decrypt-text param passphrase))
+      "encrypt-file" (encrypt-file! param passphrase)
+      "decrypt-file" (decrypt-file! param passphrase)
+      "encrypt-dir" (encrypt-dir! param passphrase)
+      "decrypt-dir" (decrypt-dir! param passphrase)
+      (println "Unknown command" cmd))
+    (shutdown-agents)))
 
 (comment
+
   ;; Example usage
 
-  ;; key must be 256 bits which is 32 char string = 32 * 8
-  (encrypt-file "README.copy.MD" "asdfeghj")
+  (encrypt-text "my super secret" "password123")
+  (decrypt-text "4N254MCu6lOiV1Bx+WRfuWBe8ylR-BEfhySZDP0AxQ==" "password123")
 
-  (calculate-checksum "README.copy.MD")
-  (calculate-checksum "tCzm0P8FM22-CQu2S5WUxl2SCjqMz91Z-aoRSlJG")
+  (encrypt-file! "README.MD" "password123")
+  (decrypt-file! "3+HY1-iboWzG9OnPmIQ7J8bZ0Vyu+nmpuQ==" "password123")
 
-  (decrypt-file "tCzm0P8FM22-CQu2S5WUxl2SCjqMz91Z-aoRSlJG" "asdfeghja")
-
-  (encrypt-text "my-folder" "test")
-
-  (decrypt-text "MxdWwtVRtPqNbi0SvKESrIorsT9Qfsyrjg=="
-                "test")
+  (encrypt-dir! "private" "password123")
+  (decrypt-dir! "private" "password123")
 
   )
 
