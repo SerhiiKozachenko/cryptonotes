@@ -1,15 +1,15 @@
 (ns cryptonotes.core
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str])
   (:import (java.io File)
            (java.nio.charset Charset StandardCharsets)
            (java.security MessageDigest)
            (java.security.spec AlgorithmParameterSpec)
            (java.time Instant)
-           [javax.crypto AEADBadTagException Cipher CipherOutputStream SecretKeyFactory]
-           [javax.crypto.spec SecretKeySpec]
-           [javax.crypto.spec IvParameterSpec PBEKeySpec]
-           [java.util Base64])
-  (:require [clojure.java.io :as io]
-            [clojure.string :as str])
+           (java.util Base64)
+           (javax.crypto.spec SecretKeySpec)
+           (javax.crypto AEADBadTagException Cipher CipherOutputStream SecretKeyFactory)
+           (javax.crypto.spec IvParameterSpec PBEKeySpec))
   (:gen-class))
 
 (set! *warn-on-reflection* true)
@@ -59,7 +59,7 @@
       (try
         (String. (.doFinal cipher base64-decoded) StandardCharsets/UTF_8)
         (catch AEADBadTagException _
-          (throw (Exception. "Failed to decrypt file")))))))
+          (throw (ex-info "Failed to decrypt file" {})))))))
 
 (defn- calculate-checksum [file-path]
   (let [digest (MessageDigest/getInstance "MD5")
@@ -133,7 +133,7 @@
                    decrypted-output-stream (CipherOutputStream. output-stream cipher)]
          (io/copy input-stream decrypted-output-stream))
        (catch AEADBadTagException _
-         (throw (Exception. "Failed to decrypt file"))))
+         (throw (ex-info "Failed to decrypt file" {}))))
      (.delete (io/file input-file)))))
 
 (defn encrypt-dir! [path passphrase]
@@ -145,9 +145,9 @@
          (filter (complement dir?))
          (pmap (fn [^File file]
                  ;; file path without root folder
-                 (let [fpath  (str/replace-first (.getPath file)
-                                                 (re-pattern path)
-                                                 "")
+                 (let [fpath (str/replace-first (.getPath file)
+                                                (re-pattern path)
+                                                "")
                        fpath (if (str/starts-with? fpath "/")
                                (str/replace-first fpath #"/" "")
                                fpath)
@@ -177,9 +177,9 @@
          (filter (complement dir?))
          (pmap (fn [^File file]
                  ;; file path without root folder
-                 (let [fpath  (str/replace-first (.getPath file)
-                                                 (re-pattern path)
-                                                 "")
+                 (let [fpath (str/replace-first (.getPath file)
+                                                (re-pattern path)
+                                                "")
                        fpath (if (str/starts-with? fpath "/")
                                (str/replace-first fpath #"/" "")
                                fpath)
@@ -202,31 +202,56 @@
 
 (defn -main
   [& args]
+  (when-not (= 3 (count args))
+    (println "Invalid args, run with following parameters: cryptonotes {command} {path/text} {passphrase}")
+    (System/exit 1))
   (let [cmd (first args)
         param (second args)
         passphrase (nth args 2)]
-    (case cmd
-      "encrypt-text" (println (encrypt-text param passphrase))
-      "decrypt-text" (println (decrypt-text param passphrase))
-      "encrypt-file" (encrypt-file! param passphrase)
-      "decrypt-file" (decrypt-file! param passphrase)
-      "encrypt-dir" (encrypt-dir! param passphrase)
-      "decrypt-dir" (decrypt-dir! param passphrase)
-      (println "Unknown command" cmd))
-    (shutdown-agents)))
+    (try
+      (case cmd
+        "encrypt-text" (println (encrypt-text param passphrase))
+        "decrypt-text" (println (decrypt-text param passphrase))
+        "encrypt-file" (encrypt-file! param passphrase)
+        "decrypt-file" (decrypt-file! param passphrase)
+        "encrypt-dir" (encrypt-dir! param passphrase)
+        "decrypt-dir" (decrypt-dir! param passphrase)
+        (do
+          (println "Unknown command" cmd)
+          (println "Available commands:")
+          (println "encrypt-text/decrypt-text")
+          (println "encrypt-file/decrypt-file")
+          (println "encrypt-dir/decrypt-dir")
+          (println "Run with following parameters: cryptonotes {command} {path/text} {passphrase}")
+          (System/exit 1)))
+      (catch java.util.concurrent.ExecutionException ex
+        (println (ex-message (ex-cause ex)))
+        (System/exit 1))
+      (catch clojure.lang.ExceptionInfo ex
+        (println (ex-message ex))
+        (System/exit 1)))
+    (shutdown-agents)
+    (System/exit 0)))
 
 (comment
 
   ;; Example usage
+  (-main "decrypt-text" "4N254MCu6lOiV1Bx+WRfuWBe8ylR-BEfhySZDP0AxQ==" "password123")
 
   (encrypt-text "my super secret" "password123")
-  (decrypt-text "4N254MCu6lOiV1Bx+WRfuWBe8ylR-BEfhySZDP0AxQ==" "password123")
+  (decrypt-text "4N254MCu6lOiV1Bx+WRfuWBe8ylR-BEfhySZDP0AxQ==" "password1232")
 
   (encrypt-file! "README.MD" "password123")
   (decrypt-file! "3+HY1-iboWzG9OnPmIQ7J8bZ0Vyu+nmpuQ==" "password123")
 
+  (-main "encrypt-file" "README.MD" "password123")
+  (-main "decrypt-file" "3+HY1-iboWzG9OnPmIQ7J8bZ0Vyu+nmpuQ==" "password123")
+
   (encrypt-dir! "private" "password123")
   (decrypt-dir! "private" "password123")
+
+  (-main "encrypt-dir" "private" "password123")
+  (-main "decrypt-dir" "private" "password1234")
 
   )
 
