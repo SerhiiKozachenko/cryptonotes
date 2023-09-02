@@ -7,19 +7,19 @@ CLI tool to encrypt/decrypt text, files, and directories.
 
 Download binary
 
-    $ curl -L https://github.com/SerhiiKozachenko/cryptonotes/releases/latest/download/cryptonotes-mac-aarch64 > cryptonotes && chmod +x cryptonotes
+    curl -L https://github.com/SerhiiKozachenko/cryptonotes/releases/latest/download/cryptonotes-mac-aarch64 > cryptonotes && chmod +x cryptonotes
 
 Encrypt directory, will encrypt and rename all sub-directories and files with encrypted names.
 
-    $ cryptonotes encrypt-dir ./my-private my-password-123
+    ./cryptonotes encrypt-dir ./my-private my-password-123
     
 Decrypt directory, will decrypt and rename all sub-directories and files with their original names.
 
-    $ cryptonotes decrypt-dir ./my-private my-password-123
+    ./cryptonotes decrypt-dir ./my-private my-password-123
 
 ## Options
 
-    $ cryptonotes {command} {path/text} {password}
+    ./cryptonotes {command} {path/text} {password}
 
 
 ## License
