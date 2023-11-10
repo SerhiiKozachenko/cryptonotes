@@ -1,6 +1,7 @@
 # cryptonotes
 
 CLI tool to encrypt/decrypt text, files, and directories.
+Written in pure Clojure, compiled with GraalVM into native binary.
 
 
 ## Usage
